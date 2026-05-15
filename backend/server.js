@@ -367,6 +367,18 @@ app.get('/api/yearly-summary/:year', (req, res) => {
   });
 });
 
+// ─── SERVE FRONTEND IN PRODUCTION ────────────────────────────────────────────
+const path = require('path');
+const fs = require('fs');
+
+const frontendBuild = path.join(__dirname, '../frontend/dist');
+if (fs.existsSync(frontendBuild)) {
+  app.use(express.static(frontendBuild));
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(frontendBuild, 'index.html'));
+  });
+}
+
 // ─── START ───────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`Backend running on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
