@@ -1,8 +1,11 @@
 const express = require('express');
 const cors = require('cors');
-const db = require('./db');
+const path = require('path');
+const fs = require('fs');
+const initDb = require('./db');
 
 const app = express();
+let db; // assigned after async init
 app.use(cors());
 app.use(express.json());
 
@@ -368,9 +371,6 @@ app.get('/api/yearly-summary/:year', (req, res) => {
 });
 
 // ─── SERVE FRONTEND IN PRODUCTION ────────────────────────────────────────────
-const path = require('path');
-const fs = require('fs');
-
 const frontendBuild = path.join(__dirname, '../frontend/dist');
 if (fs.existsSync(frontendBuild)) {
   app.use(express.static(frontendBuild));
@@ -381,4 +381,13 @@ if (fs.existsSync(frontendBuild)) {
 
 // ─── START ───────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+
+initDb()
+  .then(initializedDb => {
+    db = initializedDb;
+    app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+  })
+  .catch(err => {
+    console.error('Failed to initialize database:', err);
+    process.exit(1);
+  });
