@@ -1,11 +1,10 @@
 import { useState, useEffect } from 'react';
-import api from '../api';
+import { FileText, BookOpen, Share2, Users, Mail, Video, Globe, TrendingUp, MousePointer, Eye } from 'lucide-react';
 import StatCard from '../components/StatCard';
 import MonthYearFilter from '../components/MonthYearFilter';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { getDashboard } from '../api';
 
-const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const PIE_COLORS = ['#4F46E5','#06B6D4','#10B981','#F59E0B','#EF4444','#8B5CF6'];
+const MONTHS = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 export default function Dashboard() {
   const now = new Date();
@@ -15,94 +14,98 @@ export default function Dashboard() {
 
   useEffect(() => {
     setLoading(true);
-    const params = {};
-    if (filter.month) params.month = filter.month;
-    if (filter.year) params.year = filter.year;
-    api.get('/dashboard', { params }).then(r => { setData(r.data); setLoading(false); });
-  }, [filter]);
+    getDashboard(filter).then(d => { setData(d); setLoading(false); }).catch(() => setLoading(false));
+  }, [filter.month, filter.year]);
 
-  if (loading || !data) return <div className="flex items-center justify-center h-64 text-slate-400">Loading dashboard...</div>;
-
-  const trendData = data.monthly_trend.map(m => ({ name: MONTH_NAMES[m.month-1], ...m }));
-  const platformData = (data.social.by_platform || []).map(p => ({ name: p.platform, value: p.c }));
+  const periodLabel = filter.month && filter.year
+    ? `${MONTHS[filter.month]} ${filter.year}`
+    : filter.year ? String(filter.year) : 'All Time';
 
   return (
-    <div>
-      <div className="page-header">
-        <h1 className="page-title">Dashboard</h1>
+    <div className="p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-800">Dashboard</h1>
+          <p className="text-sm text-gray-500 mt-0.5">Marketing overview — {periodLabel}</p>
+        </div>
         <MonthYearFilter month={filter.month} year={filter.year} onChange={setFilter} />
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard title="Blog Posts" value={data.blog.count} subtitle={`${data.blog.views.toLocaleString()} views`} color="indigo" icon="✍️" />
-        <StatCard title="Social Posts" value={data.social.total} subtitle={`${data.social.impressions.toLocaleString()} impressions`} color="blue" icon="📱" />
-        <StatCard title="Landing Pages" value={data.landing_pages.total} subtitle={`${data.landing_pages.new} new · ${data.landing_pages.updated} updated`} color="cyan" icon="🏠" />
-        <StatCard title="Email Campaigns" value={data.email.count} subtitle={`${data.email.recipients.toLocaleString()} recipients`} color="purple" icon="📧" />
-        <StatCard title="Videos Published" value={data.video.count} subtitle={`${data.video.views.toLocaleString()} views`} color="rose" icon="🎬" />
-        <StatCard title="Tasks Completed" value={`${data.tasks.completed}/${data.tasks.total}`} subtitle={`${data.tasks.completion_rate}% completion rate`} color="emerald" icon="✅" />
-        {data.seo && <StatCard title="SEO Traffic" value={data.seo.organic_traffic} subtitle={`${data.seo.top10_keywords} keywords top 10`} color="amber" icon="🔍" />}
-        <StatCard title="Social Engagement" value={data.social.engagement.toLocaleString()} subtitle="Total interactions" color="orange" icon="💬" />
-      </div>
+      {loading ? (
+        <div className="text-center py-16 text-gray-400">Loading...</div>
+      ) : !data ? (
+        <div className="text-center py-16 text-gray-400">No data</div>
+      ) : (
+        <>
+          {/* Content counts */}
+          <div>
+            <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Content Published</h2>
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
+              <StatCard label="Blogs" value={data.blogs} icon={FileText} color="#3B82F6" />
+              <StatCard label="Docs" value={data.documentations} icon={BookOpen} color="#8B5CF6" />
+              <StatCard label="Social" value={data.social_posts} icon={Share2} color="#F59E0B" />
+              <StatCard label="Community" value={data.community_posts} icon={Users} color="#10B981" />
+              <StatCard label="Emails" value={data.emails} icon={Mail} color="#EF4444" />
+              <StatCard label="Videos" value={data.videos} icon={Video} color="#EC4899" />
+              <StatCard label="Landing" value={data.landing_pages} icon={Globe} color="#06B6D4" />
+            </div>
+          </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-        <div className="card-pad lg:col-span-2">
-          <h2 className="text-sm font-bold text-slate-700 mb-4">Monthly Activity — {filter.year || new Date().getFullYear()}</h2>
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={trendData} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-              <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Bar dataKey="blogs" name="Blog Posts" fill="#4F46E5" radius={[3,3,0,0]} />
-              <Bar dataKey="social" name="Social Posts" fill="#06B6D4" radius={[3,3,0,0]} />
-              <Bar dataKey="emails" name="Emails" fill="#10B981" radius={[3,3,0,0]} />
-              <Bar dataKey="videos" name="Videos" fill="#F59E0B" radius={[3,3,0,0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-
-        <div className="card-pad">
-          <h2 className="text-sm font-bold text-slate-700 mb-4">Social Media Breakdown</h2>
-          {platformData.length > 0 ? (
-            <>
-              <ResponsiveContainer width="100%" height={180}>
-                <PieChart>
-                  <Pie data={platformData} cx="50%" cy="50%" outerRadius={70} dataKey="value" label={({ name, percent }) => `${name} ${(percent*100).toFixed(0)}%`} labelLine={false}>
-                    {platformData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
-              <div className="space-y-1 mt-2">
-                {platformData.map((p, i) => (
-                  <div key={p.name} className="flex items-center justify-between text-xs">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2.5 h-2.5 rounded-full" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
-                      <span className="text-slate-600">{p.name}</span>
-                    </div>
-                    <span className="font-semibold text-slate-700">{p.value} posts</span>
-                  </div>
-                ))}
+          {/* Email performance */}
+          {data.emails > 0 && (
+            <div>
+              <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Email Performance</h2>
+              <div className="grid grid-cols-3 gap-4">
+                <StatCard label="Avg Open Rate" value={`${(data.email_avg_open || 0).toFixed(1)}%`} icon={TrendingUp} color="#3B82F6" />
+                <StatCard label="Avg Click Rate" value={`${(data.email_avg_click || 0).toFixed(1)}%`} icon={MousePointer} color="#8B5CF6" />
+                <StatCard label="Total Recipients" value={(data.email_total_recipients || 0).toLocaleString()} icon={Mail} color="#10B981" />
               </div>
-            </>
-          ) : (
-            <div className="flex items-center justify-center h-32 text-slate-400 text-sm">No social data for this period</div>
+            </div>
           )}
-        </div>
-      </div>
 
-      {data.tasks.total > 0 && (
-        <div className="card-pad">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="text-sm font-bold text-slate-700">Task Completion Rate</h2>
-            <span className="text-sm font-bold text-indigo-600">{data.tasks.completion_rate}%</span>
-          </div>
-          <div className="w-full bg-slate-100 rounded-full h-3">
-            <div className="bg-indigo-600 h-3 rounded-full transition-all" style={{ width: `${data.tasks.completion_rate}%` }} />
-          </div>
-          <p className="text-xs text-slate-500 mt-1">{data.tasks.completed} of {data.tasks.total} tasks completed</p>
-        </div>
+          {/* Social platform breakdown */}
+          {data.social_posts > 0 && (
+            <div>
+              <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Social Platform Posts</h2>
+              <div className="grid grid-cols-3 gap-4">
+                <div className="stat-card flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-xs">fb</div>
+                  <div>
+                    <p className="text-xs text-gray-500">Facebook</p>
+                    <p className="text-xl font-bold text-gray-800">{data.social_fb}</p>
+                  </div>
+                </div>
+                <div className="stat-card flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center text-blue-700 font-bold text-xs">in</div>
+                  <div>
+                    <p className="text-xs text-gray-500">LinkedIn</p>
+                    <p className="text-xl font-bold text-gray-800">{data.social_li}</p>
+                  </div>
+                </div>
+                <div className="stat-card flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center text-gray-700 font-bold text-xs">𝕏</div>
+                  <div>
+                    <p className="text-xs text-gray-500">Twitter/X</p>
+                    <p className="text-xl font-bold text-gray-800">{data.social_tw}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Site performance */}
+          {data.overview && (
+            <div>
+              <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Site Performance</h2>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <StatCard label="Total Clicks" value={(data.overview.total_clicks || 0).toLocaleString()} icon={MousePointer} color="#3B82F6" />
+                <StatCard label="Impressions" value={(data.overview.total_impressions || 0).toLocaleString()} icon={Eye} color="#8B5CF6" />
+                <StatCard label="Avg CTR" value={`${(data.overview.avg_ctr || 0).toFixed(2)}%`} icon={TrendingUp} color="#10B981" />
+                <StatCard label="Avg Position" value={(data.overview.avg_position || 0).toFixed(1)} icon={TrendingUp} color="#F59E0B" />
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
