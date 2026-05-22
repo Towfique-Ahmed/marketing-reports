@@ -6,8 +6,18 @@ const initDb = require('./db');
 
 const app = express();
 let db; // assigned after async init
+
 app.use(cors());
 app.use(express.json());
+
+// Health check — always available, even before DB is ready
+app.get('/health', (req, res) => res.json({ status: 'ok', db: !!db }));
+
+// Return 503 for API routes if DB isn't ready yet (prevents crashes)
+app.use('/api', (req, res, next) => {
+  if (!db) return res.status(503).json({ error: 'Server starting, please retry in a moment' });
+  next();
+});
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 function monthYear(req) {
@@ -382,11 +392,16 @@ if (fs.existsSync(frontendBuild)) {
 // ─── START ───────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 
+// Initialize DB; if running directly (not under Phusion Passenger), also bind a port
+const runningDirectly = require.main === module;
+
 initDb()
   .then(initializedDb => {
     db = initializedDb;
     console.log('Database initialized successfully');
-    app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
+    if (runningDirectly) {
+      app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
+    }
   })
   .catch(err => {
     console.error('STARTUP ERROR:', err.message);
@@ -394,5 +409,5 @@ initDb()
     process.exit(1);
   });
 
-// Phusion Passenger compatibility (used by cPanel/xCloud)
+// Phusion Passenger loads this as a module; it handles port binding itself
 module.exports = app;

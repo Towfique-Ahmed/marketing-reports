@@ -35,8 +35,9 @@ jobs:
       - name: Verify server starts
         run: |
           cd backend
-          timeout 8 node server.js &
-          sleep 4
+          timeout 10 node server.js &
+          sleep 5
+          curl -f http://localhost:3001/health || exit 1
           curl -f http://localhost:3001/api/dashboard || exit 1
           kill %1
         env:
