@@ -4,18 +4,16 @@ import Modal from '../components/Modal';
 import ConfirmDialog from '../components/ConfirmDialog';
 import MonthYearFilter from '../components/MonthYearFilter';
 import CsvImportModal from '../components/CsvImportModal';
-import { getSocialPosts, createSocialPost, updateSocialPost, deleteSocialPost, bulkSocialPosts } from '../api';
+import { getDocumentations, createDocumentation, updateDocumentation, deleteDocumentation, bulkDocumentations } from '../api';
 
 const MONTHS = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 const CSV_COLUMNS = [
-  { key: 'title', label: 'Title', required: true, example: 'New Feature Announcement' },
-  { key: 'post_date', label: 'Post Date', example: '2026-05-15' },
+  { key: 'title', label: 'Title', required: true, example: 'How to Deploy App on xCloud' },
+  { key: 'url', label: 'URL', example: 'https://xcloud.host/docs/...' },
+  { key: 'publish_date', label: 'Publish Date', example: '2026-05-14' },
   { key: 'month', label: 'Month', type: 'number', example: '5' },
   { key: 'year', label: 'Year', type: 'number', example: '2026' },
-  { key: 'fb_url', label: 'Facebook URL', example: 'https://facebook.com/...' },
-  { key: 'linkedin_url', label: 'LinkedIn URL', example: 'https://linkedin.com/...' },
-  { key: 'twitter_url', label: 'Twitter URL', example: 'https://x.com/...' },
   { key: 'notes', label: 'Notes', example: '' },
 ];
 
@@ -25,22 +23,12 @@ function exportCsv(data) {
   const csv = [header, ...rows].join('\n');
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = 'social-posts.csv'; a.click(); URL.revokeObjectURL(url);
+  const a = document.createElement('a'); a.href = url; a.download = 'documentations.csv'; a.click(); URL.revokeObjectURL(url);
 }
 
-function PlatformLink({ url, label, bg, text }) {
-  if (!url) return <span className="text-gray-300">—</span>;
-  return (
-    <a href={url} target="_blank" rel="noreferrer"
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${bg} ${text} hover:opacity-80`}>
-      {label} <ExternalLink size={10} />
-    </a>
-  );
-}
+const empty = { title: '', url: '', publish_date: '', month: '', year: '', notes: '' };
 
-const empty = { title: '', post_date: '', month: '', year: '', fb_url: '', linkedin_url: '', twitter_url: '', notes: '' };
-
-export default function SocialMedia() {
+export default function Documentations() {
   const now = new Date();
   const [filter, setFilter] = useState({ month: now.getMonth() + 1, year: now.getFullYear() });
   const [rows, setRows] = useState([]);
@@ -52,7 +40,7 @@ export default function SocialMedia() {
 
   const load = useCallback(() => {
     setLoading(true);
-    getSocialPosts(filter).then(d => { setRows(d); setLoading(false); }).catch(() => setLoading(false));
+    getDocumentations(filter).then(d => { setRows(d); setLoading(false); }).catch(() => setLoading(false));
   }, [filter.month, filter.year]);
 
   useEffect(() => { load(); }, [load]);
@@ -62,31 +50,26 @@ export default function SocialMedia() {
 
   async function handleSave() {
     const payload = { ...form, month: form.month ? parseInt(form.month) : null, year: form.year ? parseInt(form.year) : null };
-    if (modal.mode === 'add') await createSocialPost(payload);
-    else await updateSocialPost(modal.id, payload);
+    if (modal.mode === 'add') await createDocumentation(payload);
+    else await updateDocumentation(modal.id, payload);
     setModal(null); load();
   }
 
-  async function handleDelete() { await deleteSocialPost(deleteId); setDeleteId(null); load(); }
+  async function handleDelete() { await deleteDocumentation(deleteId); setDeleteId(null); load(); }
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
-
-  // Counts
-  const fbCount = rows.filter(r => r.fb_url).length;
-  const liCount = rows.filter(r => r.linkedin_url).length;
-  const twCount = rows.filter(r => r.twitter_url).length;
 
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">Social Media</h1>
-          <p className="text-sm text-gray-500 mt-0.5">{rows.length} posts — FB: {fbCount} · LI: {liCount} · TW: {twCount}</p>
+          <h1 className="text-2xl font-bold text-gray-800">Documentations</h1>
+          <p className="text-sm text-gray-500 mt-0.5">{rows.length} docs</p>
         </div>
         <div className="flex items-center gap-3">
           <MonthYearFilter month={filter.month} year={filter.year} onChange={setFilter} />
           <button onClick={() => exportCsv(rows)} className="btn-secondary flex items-center gap-1.5"><Download size={15} /> Export</button>
           <button onClick={() => setShowImport(true)} className="btn-secondary flex items-center gap-1.5"><Upload size={15} /> Import</button>
-          <button onClick={openAdd} className="btn-primary flex items-center gap-1.5"><Plus size={15} /> Add Post</button>
+          <button onClick={openAdd} className="btn-primary flex items-center gap-1.5"><Plus size={15} /> Add Doc</button>
         </div>
       </div>
 
@@ -94,7 +77,7 @@ export default function SocialMedia() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50 border-b border-gray-200">
             <tr>
-              {['Title','Date','Facebook','LinkedIn','Twitter/X'].map(h => (
+              {['Title','URL','Date','Period'].map(h => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
               ))}
               <th className="px-4 py-3 w-20"></th>
@@ -102,16 +85,15 @@ export default function SocialMedia() {
           </thead>
           <tbody className="divide-y divide-gray-100">
             {loading ? (
-              <tr><td colSpan={6} className="py-12 text-center text-gray-400">Loading...</td></tr>
+              <tr><td colSpan={5} className="py-12 text-center text-gray-400">Loading...</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={6} className="py-12 text-center text-gray-400">No social posts yet.</td></tr>
+              <tr><td colSpan={5} className="py-12 text-center text-gray-400">No documentations yet.</td></tr>
             ) : rows.map(r => (
               <tr key={r.id} className="hover:bg-gray-50 transition-colors">
-                <td className="px-4 py-3 max-w-xs"><div className="font-medium text-gray-800 truncate">{r.title}</div></td>
-                <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{r.post_date || (r.month ? `${MONTHS[r.month]} ${r.year}` : '—')}</td>
-                <td className="px-4 py-3"><PlatformLink url={r.fb_url} label="FB" bg="bg-blue-100" text="text-blue-700" /></td>
-                <td className="px-4 py-3"><PlatformLink url={r.linkedin_url} label="LI" bg="bg-sky-100" text="text-sky-700" /></td>
-                <td className="px-4 py-3"><PlatformLink url={r.twitter_url} label="𝕏" bg="bg-gray-100" text="text-gray-700" /></td>
+                <td className="px-4 py-3 max-w-sm"><div className="font-medium text-gray-800">{r.title}</div></td>
+                <td className="px-4 py-3">{r.url ? <a href={r.url} target="_blank" rel="noreferrer" className="text-blue-500 hover:underline flex items-center gap-1 text-xs"><ExternalLink size={10} /> View</a> : '—'}</td>
+                <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{r.publish_date || '—'}</td>
+                <td className="px-4 py-3 text-gray-500">{r.month ? `${MONTHS[r.month]} ${r.year}` : '—'}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
                     <button onClick={() => openEdit(r)} className="text-gray-400 hover:text-blue-500 transition-colors"><Pencil size={14} /></button>
@@ -125,17 +107,21 @@ export default function SocialMedia() {
       </div>
 
       {modal && (
-        <Modal title={modal.mode === 'add' ? 'Add Social Post' : 'Edit Social Post'} onClose={() => setModal(null)} size="lg">
+        <Modal title={modal.mode === 'add' ? 'Add Documentation' : 'Edit Documentation'} onClose={() => setModal(null)}>
           <div className="space-y-4">
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">Title *</label>
               <input value={form.title} onChange={e => set('title', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Post Date</label>
-                <input type="date" value={form.post_date} onChange={e => set('post_date', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
-              </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">URL</label>
+              <input value={form.url} onChange={e => set('url', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="https://" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Publish Date</label>
+              <input type="date" value={form.publish_date} onChange={e => set('publish_date', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Month</label>
                 <input type="number" min="1" max="12" value={form.month} onChange={e => set('month', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
@@ -146,18 +132,6 @@ export default function SocialMedia() {
               </div>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Facebook URL</label>
-              <input value={form.fb_url} onChange={e => set('fb_url', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="https://facebook.com/..." />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">LinkedIn URL</label>
-              <input value={form.linkedin_url} onChange={e => set('linkedin_url', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="https://linkedin.com/..." />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Twitter/X URL</label>
-              <input value={form.twitter_url} onChange={e => set('twitter_url', e.target.value)} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="https://x.com/..." />
-            </div>
-            <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">Notes</label>
               <textarea value={form.notes} onChange={e => set('notes', e.target.value)} rows={2} className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-none" />
             </div>
@@ -165,14 +139,14 @@ export default function SocialMedia() {
           <div className="flex justify-end gap-3 mt-4 pt-4 border-t">
             <button onClick={() => setModal(null)} className="btn-secondary">Cancel</button>
             <button onClick={handleSave} disabled={!form.title} className="btn-primary disabled:opacity-50">
-              {modal.mode === 'add' ? 'Add Post' : 'Save Changes'}
+              {modal.mode === 'add' ? 'Add Doc' : 'Save Changes'}
             </button>
           </div>
         </Modal>
       )}
 
-      {deleteId && <ConfirmDialog message="Delete this social post?" onConfirm={handleDelete} onCancel={() => setDeleteId(null)} />}
-      {showImport && <CsvImportModal title="Social Posts" columns={CSV_COLUMNS} onImport={bulkSocialPosts} onClose={() => { setShowImport(false); load(); }} />}
+      {deleteId && <ConfirmDialog message="Delete this documentation?" onConfirm={handleDelete} onCancel={() => setDeleteId(null)} />}
+      {showImport && <CsvImportModal title="Documentations" columns={CSV_COLUMNS} onImport={bulkDocumentations} onClose={() => { setShowImport(false); load(); }} />}
     </div>
   );
 }

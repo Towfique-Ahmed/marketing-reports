@@ -1,240 +1,254 @@
-import { useState, useEffect } from 'react';
-import api from '../api';
+import { useState, useEffect, useCallback } from 'react';
+import { Plus, Pencil, Trash2, Upload, Download, TrendingUp, Users, MousePointer } from 'lucide-react';
 import Modal from '../components/Modal';
 import ConfirmDialog from '../components/ConfirmDialog';
 import MonthYearFilter from '../components/MonthYearFilter';
+import CsvImportModal from '../components/CsvImportModal';
+import StatCard from '../components/StatCard';
+import { getEmailCampaigns, createEmailCampaign, updateEmailCampaign, deleteEmailCampaign, bulkEmailCampaigns } from '../api';
 
-const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-const currentYear = new Date().getFullYear();
-const YEARS = Array.from({length: 5}, (_, i) => currentYear - i);
+const MONTHS = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-const blank = {
-  campaign_name: '', subject: '', send_date: '', month: '', year: '',
-  recipients: 0, delivered: 0, opens: 0, open_rate: 0,
-  clicks: 0, click_rate: 0, unsubscribes: 0, conversions: 0, notes: ''
-};
+const CSV_COLUMNS = [
+  { key: 'campaign_name', label: 'Campaign Name', required: true, example: 'March Newsletter' },
+  { key: 'send_date', label: 'Send Date', example: '2026-03-05' },
+  { key: 'month', label: 'Month', type: 'number', example: '3' },
+  { key: 'year', label: 'Year', type: 'number', example: '2026' },
+  { key: 'recipients', label: 'Recipients', type: 'number', example: '11500' },
+  { key: 'open_rate', label: 'Open Rate (%)', type: 'number', example: '36.5' },
+  { key: 'click_rate', label: 'Click Rate (%)', type: 'number', example: '2.1' },
+  { key: 'notes', label: 'Notes', example: '' },
+];
+
+function exportCsv(data) {
+  const header = CSV_COLUMNS.map(c => c.label).join(',');
+  const rows = data.map(r => CSV_COLUMNS.map(c => `"${(r[c.key] ?? '').toString().replace(/"/g, '""')}"`).join(','));
+  const csv = [header, ...rows].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'email-campaigns.csv'; a.click(); URL.revokeObjectURL(url);
+}
+
+const empty = { campaign_name: '', send_date: '', month: '', year: '', recipients: '', open_rate: '', click_rate: '', notes: '' };
 
 export default function EmailCampaigns() {
-  const [campaigns, setCampaigns] = useState([]);
-  const [filter, setFilter] = useState({ month: null, year: null });
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState(blank);
+  const now = new Date();
+  const [filter, setFilter] = useState({ month: now.getMonth() + 1, year: now.getFullYear() });
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(null);
   const [deleteId, setDeleteId] = useState(null);
-  const [saving, setSaving] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [form, setForm] = useState(empty);
 
-  const load = () => {
-    const params = {};
-    if (filter.month) params.month = filter.month;
-    if (filter.year) params.year = filter.year;
-    api.get('/email-campaigns', { params }).then(r => setCampaigns(r.data));
-  };
+  const load = useCallback(() => {
+    setLoading(true);
+    getEmailCampaigns(filter).then(d => { setRows(d); setLoading(false); }).catch(() => setLoading(false));
+  }, [filter.month, filter.year]);
 
-  useEffect(() => { load(); }, [filter]);
+  useEffect(() => { load(); }, [load]);
 
-  const openAdd = () => { setForm(blank); setEditing(null); setModalOpen(true); };
-  const openEdit = (c) => { setForm({ ...c }); setEditing(c.id); setModalOpen(true); };
+  const avgOpen = rows.length ? (rows.reduce((a, r) => a + (r.open_rate || 0), 0) / rows.length).toFixed(1) : 0;
+  const avgClick = rows.length ? (rows.reduce((a, r) => a + (r.click_rate || 0), 0) / rows.length).toFixed(1) : 0;
+  const totalRecipients = rows.reduce((a, r) => a + (r.recipients || 0), 0);
+
+  function openAdd() { setForm({ ...empty, month: filter.month || '', year: filter.year || '' }); setModal({ mode: 'add' }); }
+  function openEdit(r) { setForm({ ...r }); setModal({ mode: 'edit', id: r.id }); }
+
+  async function handleSave() {
+    const p = {
+      ...form,
+      month: form.month ? parseInt(form.month) : null,
+      year: form.year ? parseInt(form.year) : null,
+      recipients: parseInt(form.recipients) || 0,
+      open_rate: parseFloat(form.open_rate) || 0,
+      click_rate: parseFloat(form.click_rate) || 0,
+    };
+    if (modal.mode === 'add') await createEmailCampaign(p);
+    else await updateEmailCampaign(modal.id, p);
+    setModal(null); load();
+  }
+
+  async function handleDelete() { await deleteEmailCampaign(deleteId); setDeleteId(null); load(); }
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  const save = async () => {
-    if (!form.campaign_name) return;
-    setSaving(true);
-    try {
-      if (editing) await api.put(`/email-campaigns/${editing}`, form);
-      else await api.post('/email-campaigns', form);
-      setModalOpen(false);
-      load();
-    } finally { setSaving(false); }
-  };
-
-  const del = async () => {
-    await api.delete(`/email-campaigns/${deleteId}`);
-    load();
-  };
-
-  const totals = campaigns.reduce((a, c) => ({
-    recipients: a.recipients + (c.recipients || 0),
-    delivered: a.delivered + (c.delivered || 0),
-    opens: a.opens + (c.opens || 0),
-    clicks: a.clicks + (c.clicks || 0),
-    conversions: a.conversions + (c.conversions || 0),
-  }), { recipients: 0, delivered: 0, opens: 0, clicks: 0, conversions: 0 });
-
-  const avgOpenRate = campaigns.length > 0 ? (campaigns.reduce((a, c) => a + (c.open_rate || 0), 0) / campaigns.length).toFixed(1) : '0';
-  const avgClickRate = campaigns.length > 0 ? (campaigns.reduce((a, c) => a + (c.click_rate || 0), 0) / campaigns.length).toFixed(1) : '0';
+  function rateColor(rate, low, high) {
+    if (rate >= high) return 'text-green-600 font-semibold';
+    if (rate >= low) return 'text-yellow-600';
+    return 'text-red-500';
+  }
 
   return (
-    <div>
-      <div className="page-header">
-        <h1 className="page-title">Email Campaigns</h1>
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-800">Email Campaigns</h1>
+          <p className="text-sm text-gray-500 mt-0.5">{rows.length} campaigns</p>
+        </div>
         <div className="flex items-center gap-3">
           <MonthYearFilter month={filter.month} year={filter.year} onChange={setFilter} />
-          <button className="btn-primary" onClick={openAdd}>+ Add Campaign</button>
+          <button onClick={() => exportCsv(rows)} className="btn-secondary flex items-center gap-1.5"><Download size={15} /> Export</button>
+          <button onClick={() => setShowImport(true)} className="btn-secondary flex items-center gap-1.5"><Upload size={15} /> Import</button>
+          <button onClick={openAdd} className="btn-primary flex items-center gap-1.5"><Plus size={15} /> Add Campaign</button>
         </div>
       </div>
 
-      {campaigns.length > 0 && (
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-          <div className="card-pad text-center">
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Campaigns</p>
-            <p className="text-2xl font-bold text-slate-800 mt-1">{campaigns.length}</p>
-          </div>
-          <div className="card-pad text-center">
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Recipients</p>
-            <p className="text-2xl font-bold text-slate-800 mt-1">{totals.recipients.toLocaleString()}</p>
-          </div>
-          <div className="card-pad text-center">
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Avg Open Rate</p>
-            <p className="text-2xl font-bold text-slate-800 mt-1">{avgOpenRate}%</p>
-          </div>
-          <div className="card-pad text-center">
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Avg Click Rate</p>
-            <p className="text-2xl font-bold text-slate-800 mt-1">{avgClickRate}%</p>
-          </div>
-          <div className="card-pad text-center">
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Conversions</p>
-            <p className="text-2xl font-bold text-slate-800 mt-1">{totals.conversions.toLocaleString()}</p>
-          </div>
+      {rows.length > 0 && (
+        <div className="grid grid-cols-3 gap-4 mb-6">
+          <StatCard label="Avg Open Rate" value={`${avgOpen}%`} icon={TrendingUp} color="#3B82F6" />
+          <StatCard label="Avg Click Rate" value={`${avgClick}%`} icon={MousePointer} color="#8B5CF6" />
+          <StatCard label="Total Recipients" value={totalRecipients.toLocaleString()} icon={Users} color="#10B981" />
         </div>
       )}
 
-      <div className="card">
-        <div className="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th>Campaign</th>
-                <th>Subject</th>
-                <th>Send Date</th>
-                <th>Recipients</th>
-                <th>Delivered</th>
-                <th>Opens</th>
-                <th>Open Rate</th>
-                <th>Clicks</th>
-                <th>Click Rate</th>
-                <th>Unsub</th>
-                <th>Conv.</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {campaigns.length === 0 ? (
-                <tr><td colSpan={12} className="text-center text-slate-400 py-12">No email campaigns found.</td></tr>
-              ) : campaigns.map(c => (
-                <tr key={c.id}>
-                  <td className="font-medium text-slate-800 max-w-xs">{c.campaign_name}</td>
-                  <td className="max-w-xs truncate text-slate-600">{c.subject || '—'}</td>
-                  <td className="whitespace-nowrap">{c.send_date || '—'}</td>
-                  <td>{(c.recipients || 0).toLocaleString()}</td>
-                  <td>{(c.delivered || 0).toLocaleString()}</td>
-                  <td>{(c.opens || 0).toLocaleString()}</td>
-                  <td>
-                    <span className={`badge ${c.open_rate >= 20 ? 'badge-green' : c.open_rate >= 10 ? 'badge-yellow' : 'badge-red'}`}>
-                      {c.open_rate || 0}%
-                    </span>
-                  </td>
-                  <td>{(c.clicks || 0).toLocaleString()}</td>
-                  <td>
-                    <span className={`badge ${c.click_rate >= 3 ? 'badge-green' : c.click_rate >= 1 ? 'badge-yellow' : 'badge-red'}`}>
-                      {c.click_rate || 0}%
-                    </span>
-                  </td>
-                  <td>{c.unsubscribes || 0}</td>
-                  <td>{c.conversions || 0}</td>
-                  <td>
-                    <div className="flex items-center gap-2">
-                      <button className="text-xs text-indigo-600 hover:underline" onClick={() => openEdit(c)}>Edit</button>
-                      <button className="text-xs text-red-500 hover:underline" onClick={() => setDeleteId(c.id)}>Delete</button>
-                    </div>
-                  </td>
-                </tr>
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 border-b border-gray-200">
+            <tr>
+              {['Campaign Name', 'Date', 'Recipients', 'Open Rate', 'Click Rate'].map(h => (
+                <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
               ))}
-            </tbody>
-          </table>
-        </div>
+              <th className="px-4 py-3 w-20"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {loading ? (
+              <tr><td colSpan={6} className="py-12 text-center text-gray-400">Loading...</td></tr>
+            ) : rows.length === 0 ? (
+              <tr><td colSpan={6} className="py-12 text-center text-gray-400">No email campaigns yet.</td></tr>
+            ) : rows.map(r => (
+              <tr key={r.id} className="table-row">
+                <td className="px-4 py-3">
+                  <div className="font-medium text-gray-800">{r.campaign_name}</div>
+                  {r.notes && <div className="text-xs text-gray-400 mt-0.5 truncate max-w-xs">{r.notes}</div>}
+                </td>
+                <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
+                  {r.send_date || (r.month ? `${MONTHS[r.month]} ${r.year}` : '—')}
+                </td>
+                <td className="px-4 py-3 text-gray-700">{r.recipients > 0 ? r.recipients.toLocaleString() : '—'}</td>
+                <td className="px-4 py-3">
+                  <span className={rateColor(r.open_rate, 25, 35)}>{r.open_rate > 0 ? `${r.open_rate}%` : '—'}</span>
+                </td>
+                <td className="px-4 py-3">
+                  <span className={rateColor(r.click_rate, 1, 2.5)}>{r.click_rate > 0 ? `${r.click_rate}%` : '—'}</span>
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => openEdit(r)} className="text-gray-400 hover:text-blue-500 transition-colors"><Pencil size={14} /></button>
+                    <button onClick={() => setDeleteId(r.id)} className="text-gray-400 hover:text-red-500 transition-colors"><Trash2 size={14} /></button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
-      <Modal title={editing ? 'Edit Email Campaign' : 'Add Email Campaign'} open={modalOpen} onClose={() => setModalOpen(false)} size="lg">
-        <div className="grid grid-cols-2 gap-4">
-          <div className="col-span-2">
-            <label className="form-label">Campaign Name *</label>
-            <input className="form-input" value={form.campaign_name} onChange={e => set('campaign_name', e.target.value)} placeholder="e.g. May Newsletter" />
-          </div>
-          <div className="col-span-2">
-            <label className="form-label">Subject Line</label>
-            <input className="form-input" value={form.subject} onChange={e => set('subject', e.target.value)} placeholder="Email subject" />
-          </div>
-          <div>
-            <label className="form-label">Send Date</label>
-            <input type="date" className="form-input" value={form.send_date} onChange={e => set('send_date', e.target.value)} />
-          </div>
-          <div className="grid grid-cols-2 gap-2">
+      {modal && (
+        <Modal title={modal.mode === 'add' ? 'Add Campaign' : 'Edit Campaign'} onClose={() => setModal(null)}>
+          <div className="space-y-4">
             <div>
-              <label className="form-label">Month</label>
-              <select className="form-input" value={form.month || ''} onChange={e => set('month', e.target.value ? parseInt(e.target.value) : '')}>
-                <option value="">—</option>
-                {MONTHS.map((m, i) => <option key={i} value={i+1}>{m}</option>)}
-              </select>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Campaign Name *</label>
+              <input
+                value={form.campaign_name}
+                onChange={e => set('campaign_name', e.target.value)}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                placeholder="e.g. March Newsletter"
+              />
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Send Date</label>
+                <input
+                  type="date"
+                  value={form.send_date}
+                  onChange={e => set('send_date', e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Month</label>
+                <input
+                  type="number" min="1" max="12"
+                  value={form.month}
+                  onChange={e => set('month', e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Year</label>
+                <input
+                  type="number"
+                  value={form.year}
+                  onChange={e => set('year', e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Recipients</label>
+                <input
+                  type="number"
+                  value={form.recipients}
+                  onChange={e => set('recipients', e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Open Rate (%)</label>
+                <input
+                  type="number" step="0.01"
+                  value={form.open_rate}
+                  onChange={e => set('open_rate', e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  placeholder="e.g. 36.5"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Click Rate (%)</label>
+                <input
+                  type="number" step="0.01"
+                  value={form.click_rate}
+                  onChange={e => set('click_rate', e.target.value)}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  placeholder="e.g. 2.1"
+                />
+              </div>
             </div>
             <div>
-              <label className="form-label">Year</label>
-              <select className="form-input" value={form.year || ''} onChange={e => set('year', e.target.value ? parseInt(e.target.value) : '')}>
-                <option value="">—</option>
-                {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
-              </select>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Notes</label>
+              <textarea
+                value={form.notes}
+                onChange={e => set('notes', e.target.value)}
+                rows={2}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-none"
+              />
             </div>
           </div>
-          <div>
-            <label className="form-label">Recipients</label>
-            <input type="number" min="0" className="form-input" value={form.recipients} onChange={e => set('recipients', parseInt(e.target.value)||0)} />
+          <div className="flex justify-end gap-3 mt-4 pt-4 border-t border-gray-100">
+            <button onClick={() => setModal(null)} className="btn-secondary">Cancel</button>
+            <button onClick={handleSave} disabled={!form.campaign_name} className="btn-primary disabled:opacity-50">
+              {modal.mode === 'add' ? 'Add Campaign' : 'Save Changes'}
+            </button>
           </div>
-          <div>
-            <label className="form-label">Delivered</label>
-            <input type="number" min="0" className="form-input" value={form.delivered} onChange={e => set('delivered', parseInt(e.target.value)||0)} />
-          </div>
-          <div>
-            <label className="form-label">Opens</label>
-            <input type="number" min="0" className="form-input" value={form.opens} onChange={e => set('opens', parseInt(e.target.value)||0)} />
-          </div>
-          <div>
-            <label className="form-label">Open Rate (%)</label>
-            <input type="number" min="0" max="100" step="0.1" className="form-input" value={form.open_rate} onChange={e => set('open_rate', parseFloat(e.target.value)||0)} />
-          </div>
-          <div>
-            <label className="form-label">Clicks</label>
-            <input type="number" min="0" className="form-input" value={form.clicks} onChange={e => set('clicks', parseInt(e.target.value)||0)} />
-          </div>
-          <div>
-            <label className="form-label">Click Rate (%)</label>
-            <input type="number" min="0" max="100" step="0.1" className="form-input" value={form.click_rate} onChange={e => set('click_rate', parseFloat(e.target.value)||0)} />
-          </div>
-          <div>
-            <label className="form-label">Unsubscribes</label>
-            <input type="number" min="0" className="form-input" value={form.unsubscribes} onChange={e => set('unsubscribes', parseInt(e.target.value)||0)} />
-          </div>
-          <div>
-            <label className="form-label">Conversions</label>
-            <input type="number" min="0" className="form-input" value={form.conversions} onChange={e => set('conversions', parseInt(e.target.value)||0)} />
-          </div>
-          <div className="col-span-2">
-            <label className="form-label">Notes</label>
-            <textarea className="form-input" rows={2} value={form.notes} onChange={e => set('notes', e.target.value)} />
-          </div>
-        </div>
-        <div className="flex gap-3 justify-end mt-6">
-          <button className="btn-secondary" onClick={() => setModalOpen(false)}>Cancel</button>
-          <button className="btn-primary" onClick={save} disabled={saving || !form.campaign_name}>
-            {saving ? 'Saving...' : editing ? 'Update' : 'Add Campaign'}
-          </button>
-        </div>
-      </Modal>
-
-      <ConfirmDialog
-        open={!!deleteId}
-        onClose={() => setDeleteId(null)}
-        onConfirm={del}
-        message="Delete this email campaign? This action cannot be undone."
-      />
+        </Modal>
+      )}
+      {deleteId && (
+        <ConfirmDialog
+          message="Delete this campaign? This action cannot be undone."
+          onConfirm={handleDelete}
+          onCancel={() => setDeleteId(null)}
+        />
+      )}
+      {showImport && (
+        <CsvImportModal
+          title="Email Campaigns"
+          columns={CSV_COLUMNS}
+          onImport={bulkEmailCampaigns}
+          onClose={() => { setShowImport(false); load(); }}
+        />
+      )}
     </div>
   );
 }

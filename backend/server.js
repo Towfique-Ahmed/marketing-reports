@@ -5,403 +5,337 @@ const fs = require('fs');
 const initDb = require('./db');
 
 const app = express();
-let db; // assigned after async init
+let db;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
-// Health check — always available, even before DB is ready
 app.get('/health', (req, res) => res.json({ status: 'ok', db: !!db }));
 
-// Return 503 for API routes if DB isn't ready yet (prevents crashes)
 app.use('/api', (req, res, next) => {
-  if (!db) return res.status(503).json({ error: 'Server starting, please retry in a moment' });
+  if (!db) return res.status(503).json({ error: 'Server starting, please retry' });
   next();
 });
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
-function monthYear(req) {
-  const month = req.query.month ? parseInt(req.query.month) : null;
-  const year = req.query.year ? parseInt(req.query.year) : null;
-  return { month, year };
+function mf(req) {
+  return {
+    month: req.query.month ? parseInt(req.query.month) : null,
+    year: req.query.year ? parseInt(req.query.year) : null,
+  };
 }
 
-function addFilters(base, params, { month, year } = {}) {
-  const conditions = [];
-  if (month) { conditions.push('month = ?'); params.push(month); }
-  if (year) { conditions.push('year = ?'); params.push(year); }
-  if (conditions.length) return base + ' WHERE ' + conditions.join(' AND ');
-  return base;
+function withFilters(sql, params, { month, year }) {
+  const conds = [];
+  if (month) { conds.push('month = ?'); params.push(month); }
+  if (year) { conds.push('year = ?'); params.push(year); }
+  return conds.length ? sql + ' WHERE ' + conds.join(' AND ') : sql;
+}
+
+function makeCrud(table, insertFn, updateFn, orderBy = 'id DESC') {
+  const url = table.replace(/_/g, '-');
+  app.get(`/api/${url}`, (req, res) => {
+    const { month, year } = mf(req);
+    const params = [];
+    res.json(db.prepare(withFilters(`SELECT * FROM ${table} ORDER BY ${orderBy}`, params, { month, year })).all(...params));
+  });
+
+  app.delete(`/api/${url}/:id`, (req, res) => {
+    db.prepare(`DELETE FROM ${table} WHERE id=?`).run(req.params.id);
+    res.json({ ok: true });
+  });
+
+  app.post(`/api/${url}/bulk`, (req, res) => {
+    const rows = Array.isArray(req.body) ? req.body : [];
+    let count = 0;
+    for (const row of rows) {
+      try { insertFn(row); count++; } catch(e) { /* skip bad rows */ }
+    }
+    res.json({ inserted: count });
+  });
 }
 
 // ─── BLOG POSTS ─────────────────────────────────────────────────────────────
-app.get('/api/blog-posts', (req, res) => {
-  const { month, year } = monthYear(req);
-  const params = [];
-  const sql = addFilters('SELECT * FROM blog_posts ORDER BY publish_date DESC', params, { month, year });
-  res.json(db.prepare(sql).all(...params));
-});
-
+function insertBlog(b) {
+  return db.prepare(`INSERT INTO blog_posts (title,url,publish_date,month,year,views,rank,ai_overview,keywords,notes) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run(b.title,b.url||'',b.publish_date||'',b.month||null,b.year||null,b.views||0,b.rank||0,b.ai_overview||'',b.keywords||'',b.notes||'');
+}
+makeCrud('blog_posts', insertBlog, null, 'publish_date DESC');
 app.post('/api/blog-posts', (req, res) => {
-  const { title, url, publish_date, month, year, views, organic_traffic, backlinks, keywords_targeted, keywords_top10, bounce_rate, avg_time_on_page, notes } = req.body;
-  const r = db.prepare(`INSERT INTO blog_posts (title,url,publish_date,month,year,views,organic_traffic,backlinks,keywords_targeted,keywords_top10,bounce_rate,avg_time_on_page,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(title,url,publish_date,month,year,views||0,organic_traffic||0,backlinks||0,keywords_targeted||0,keywords_top10||0,bounce_rate||0,avg_time_on_page||'0:00',notes||'');
+  const r = insertBlog(req.body);
   res.json(db.prepare('SELECT * FROM blog_posts WHERE id=?').get(r.lastInsertRowid));
 });
-
 app.put('/api/blog-posts/:id', (req, res) => {
-  const { title, url, publish_date, month, year, views, organic_traffic, backlinks, keywords_targeted, keywords_top10, bounce_rate, avg_time_on_page, notes } = req.body;
-  db.prepare(`UPDATE blog_posts SET title=?,url=?,publish_date=?,month=?,year=?,views=?,organic_traffic=?,backlinks=?,keywords_targeted=?,keywords_top10=?,bounce_rate=?,avg_time_on_page=?,notes=? WHERE id=?`).run(title,url,publish_date,month,year,views||0,organic_traffic||0,backlinks||0,keywords_targeted||0,keywords_top10||0,bounce_rate||0,avg_time_on_page||'0:00',notes||'',req.params.id);
+  const b = req.body;
+  db.prepare(`UPDATE blog_posts SET title=?,url=?,publish_date=?,month=?,year=?,views=?,rank=?,ai_overview=?,keywords=?,notes=? WHERE id=?`)
+    .run(b.title,b.url||'',b.publish_date||'',b.month||null,b.year||null,b.views||0,b.rank||0,b.ai_overview||'',b.keywords||'',b.notes||'',req.params.id);
   res.json(db.prepare('SELECT * FROM blog_posts WHERE id=?').get(req.params.id));
 });
 
-app.delete('/api/blog-posts/:id', (req, res) => {
-  db.prepare('DELETE FROM blog_posts WHERE id=?').run(req.params.id);
-  res.json({ ok: true });
+// ─── DOCUMENTATIONS ──────────────────────────────────────────────────────────
+function insertDoc(d) {
+  return db.prepare(`INSERT INTO documentations (title,url,publish_date,month,year,notes) VALUES (?,?,?,?,?,?)`)
+    .run(d.title,d.url||'',d.publish_date||'',d.month||null,d.year||null,d.notes||'');
+}
+makeCrud('documentations', insertDoc, null, 'publish_date DESC');
+app.post('/api/documentations', (req, res) => {
+  const r = insertDoc(req.body);
+  res.json(db.prepare('SELECT * FROM documentations WHERE id=?').get(r.lastInsertRowid));
+});
+app.put('/api/documentations/:id', (req, res) => {
+  const d = req.body;
+  db.prepare(`UPDATE documentations SET title=?,url=?,publish_date=?,month=?,year=?,notes=? WHERE id=?`)
+    .run(d.title,d.url||'',d.publish_date||'',d.month||null,d.year||null,d.notes||'',req.params.id);
+  res.json(db.prepare('SELECT * FROM documentations WHERE id=?').get(req.params.id));
 });
 
 // ─── SOCIAL POSTS ────────────────────────────────────────────────────────────
-app.get('/api/social-posts', (req, res) => {
-  const { month, year } = monthYear(req);
-  const params = [];
-  const conditions = [];
-  if (req.query.platform) { conditions.push('platform = ?'); params.push(req.query.platform); }
-  if (month) { conditions.push('month = ?'); params.push(month); }
-  if (year) { conditions.push('year = ?'); params.push(year); }
-  const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
-  res.json(db.prepare(`SELECT * FROM social_posts${where} ORDER BY post_date DESC`).all(...params));
-});
-
+function insertSocial(s) {
+  return db.prepare(`INSERT INTO social_posts (title,post_date,month,year,fb_url,linkedin_url,twitter_url,notes) VALUES (?,?,?,?,?,?,?,?)`)
+    .run(s.title,s.post_date||'',s.month||null,s.year||null,s.fb_url||'',s.linkedin_url||'',s.twitter_url||'',s.notes||'');
+}
+makeCrud('social_posts', insertSocial, null, 'post_date DESC');
 app.post('/api/social-posts', (req, res) => {
-  const { platform, title, post_url, post_date, month, year, impressions, reach, engagement, likes, comments, shares, clicks, notes } = req.body;
-  const r = db.prepare(`INSERT INTO social_posts (platform,title,post_url,post_date,month,year,impressions,reach,engagement,likes,comments,shares,clicks,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(platform,title||'',post_url||'',post_date,month,year,impressions||0,reach||0,engagement||0,likes||0,comments||0,shares||0,clicks||0,notes||'');
+  const r = insertSocial(req.body);
   res.json(db.prepare('SELECT * FROM social_posts WHERE id=?').get(r.lastInsertRowid));
 });
-
 app.put('/api/social-posts/:id', (req, res) => {
-  const { platform, title, post_url, post_date, month, year, impressions, reach, engagement, likes, comments, shares, clicks, notes } = req.body;
-  db.prepare(`UPDATE social_posts SET platform=?,title=?,post_url=?,post_date=?,month=?,year=?,impressions=?,reach=?,engagement=?,likes=?,comments=?,shares=?,clicks=?,notes=? WHERE id=?`).run(platform,title||'',post_url||'',post_date,month,year,impressions||0,reach||0,engagement||0,likes||0,comments||0,shares||0,clicks||0,notes||'',req.params.id);
+  const s = req.body;
+  db.prepare(`UPDATE social_posts SET title=?,post_date=?,month=?,year=?,fb_url=?,linkedin_url=?,twitter_url=?,notes=? WHERE id=?`)
+    .run(s.title,s.post_date||'',s.month||null,s.year||null,s.fb_url||'',s.linkedin_url||'',s.twitter_url||'',s.notes||'',req.params.id);
   res.json(db.prepare('SELECT * FROM social_posts WHERE id=?').get(req.params.id));
 });
 
-app.delete('/api/social-posts/:id', (req, res) => {
-  db.prepare('DELETE FROM social_posts WHERE id=?').run(req.params.id);
-  res.json({ ok: true });
+// ─── COMMUNITY POSTS ─────────────────────────────────────────────────────────
+function insertCommunity(c) {
+  return db.prepare(`INSERT INTO community_posts (title,post_date,month,year,url,notes) VALUES (?,?,?,?,?,?)`)
+    .run(c.title,c.post_date||'',c.month||null,c.year||null,c.url||'',c.notes||'');
+}
+makeCrud('community_posts', insertCommunity, null, 'post_date DESC');
+app.post('/api/community-posts', (req, res) => {
+  const r = insertCommunity(req.body);
+  res.json(db.prepare('SELECT * FROM community_posts WHERE id=?').get(r.lastInsertRowid));
 });
-
-// ─── LANDING PAGES ───────────────────────────────────────────────────────────
-app.get('/api/landing-pages', (req, res) => {
-  const { month, year } = monthYear(req);
-  const params = [];
-  const conditions = [];
-  if (req.query.page_type) { conditions.push('page_type = ?'); params.push(req.query.page_type); }
-  if (month) { conditions.push('month = ?'); params.push(month); }
-  if (year) { conditions.push('year = ?'); params.push(year); }
-  const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
-  res.json(db.prepare(`SELECT * FROM landing_pages${where} ORDER BY publish_date DESC`).all(...params));
-});
-
-app.post('/api/landing-pages', (req, res) => {
-  const { title, page_url, page_type, publish_date, month, year, sessions, conversions, conversion_rate, bounce_rate, avg_session_duration, notes } = req.body;
-  const r = db.prepare(`INSERT INTO landing_pages (title,page_url,page_type,publish_date,month,year,sessions,conversions,conversion_rate,bounce_rate,avg_session_duration,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(title,page_url||'',page_type||'new',publish_date,month,year,sessions||0,conversions||0,conversion_rate||0,bounce_rate||0,avg_session_duration||'0:00',notes||'');
-  res.json(db.prepare('SELECT * FROM landing_pages WHERE id=?').get(r.lastInsertRowid));
-});
-
-app.put('/api/landing-pages/:id', (req, res) => {
-  const { title, page_url, page_type, publish_date, month, year, sessions, conversions, conversion_rate, bounce_rate, avg_session_duration, notes } = req.body;
-  db.prepare(`UPDATE landing_pages SET title=?,page_url=?,page_type=?,publish_date=?,month=?,year=?,sessions=?,conversions=?,conversion_rate=?,bounce_rate=?,avg_session_duration=?,notes=? WHERE id=?`).run(title,page_url||'',page_type||'new',publish_date,month,year,sessions||0,conversions||0,conversion_rate||0,bounce_rate||0,avg_session_duration||'0:00',notes||'',req.params.id);
-  res.json(db.prepare('SELECT * FROM landing_pages WHERE id=?').get(req.params.id));
-});
-
-app.delete('/api/landing-pages/:id', (req, res) => {
-  db.prepare('DELETE FROM landing_pages WHERE id=?').run(req.params.id);
-  res.json({ ok: true });
+app.put('/api/community-posts/:id', (req, res) => {
+  const c = req.body;
+  db.prepare(`UPDATE community_posts SET title=?,post_date=?,month=?,year=?,url=?,notes=? WHERE id=?`)
+    .run(c.title,c.post_date||'',c.month||null,c.year||null,c.url||'',c.notes||'',req.params.id);
+  res.json(db.prepare('SELECT * FROM community_posts WHERE id=?').get(req.params.id));
 });
 
 // ─── EMAIL CAMPAIGNS ─────────────────────────────────────────────────────────
-app.get('/api/email-campaigns', (req, res) => {
-  const { month, year } = monthYear(req);
-  const params = [];
-  const sql = addFilters('SELECT * FROM email_campaigns ORDER BY send_date DESC', params, { month, year });
-  res.json(db.prepare(sql).all(...params));
-});
-
+function insertEmail(e) {
+  return db.prepare(`INSERT INTO email_campaigns (campaign_name,send_date,month,year,recipients,open_rate,click_rate,notes) VALUES (?,?,?,?,?,?,?,?)`)
+    .run(e.campaign_name,e.send_date||'',e.month||null,e.year||null,e.recipients||0,e.open_rate||0,e.click_rate||0,e.notes||'');
+}
+makeCrud('email_campaigns', insertEmail, null, 'send_date DESC');
 app.post('/api/email-campaigns', (req, res) => {
-  const { campaign_name, subject, send_date, month, year, recipients, delivered, opens, open_rate, clicks, click_rate, unsubscribes, conversions, notes } = req.body;
-  const r = db.prepare(`INSERT INTO email_campaigns (campaign_name,subject,send_date,month,year,recipients,delivered,opens,open_rate,clicks,click_rate,unsubscribes,conversions,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(campaign_name,subject||'',send_date,month,year,recipients||0,delivered||0,opens||0,open_rate||0,clicks||0,click_rate||0,unsubscribes||0,conversions||0,notes||'');
+  const r = insertEmail(req.body);
   res.json(db.prepare('SELECT * FROM email_campaigns WHERE id=?').get(r.lastInsertRowid));
 });
-
 app.put('/api/email-campaigns/:id', (req, res) => {
-  const { campaign_name, subject, send_date, month, year, recipients, delivered, opens, open_rate, clicks, click_rate, unsubscribes, conversions, notes } = req.body;
-  db.prepare(`UPDATE email_campaigns SET campaign_name=?,subject=?,send_date=?,month=?,year=?,recipients=?,delivered=?,opens=?,open_rate=?,clicks=?,click_rate=?,unsubscribes=?,conversions=?,notes=? WHERE id=?`).run(campaign_name,subject||'',send_date,month,year,recipients||0,delivered||0,opens||0,open_rate||0,clicks||0,click_rate||0,unsubscribes||0,conversions||0,notes||'',req.params.id);
+  const e = req.body;
+  db.prepare(`UPDATE email_campaigns SET campaign_name=?,send_date=?,month=?,year=?,recipients=?,open_rate=?,click_rate=?,notes=? WHERE id=?`)
+    .run(e.campaign_name,e.send_date||'',e.month||null,e.year||null,e.recipients||0,e.open_rate||0,e.click_rate||0,e.notes||'',req.params.id);
   res.json(db.prepare('SELECT * FROM email_campaigns WHERE id=?').get(req.params.id));
 });
 
-app.delete('/api/email-campaigns/:id', (req, res) => {
-  db.prepare('DELETE FROM email_campaigns WHERE id=?').run(req.params.id);
-  res.json({ ok: true });
-});
-
 // ─── VIDEOS ──────────────────────────────────────────────────────────────────
-app.get('/api/videos', (req, res) => {
-  const { month, year } = monthYear(req);
-  const params = [];
-  const sql = addFilters('SELECT * FROM videos ORDER BY publish_date DESC', params, { month, year });
-  res.json(db.prepare(sql).all(...params));
-});
-
+function insertVideo(v) {
+  return db.prepare(`INSERT INTO videos (title,platform,video_url,publish_date,month,year,views,watch_time_hours,likes,comments,shares,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(v.title,v.platform||'YouTube',v.video_url||'',v.publish_date||'',v.month||null,v.year||null,v.views||0,v.watch_time_hours||0,v.likes||0,v.comments||0,v.shares||0,v.notes||'');
+}
+makeCrud('videos', insertVideo, null, 'publish_date DESC');
 app.post('/api/videos', (req, res) => {
-  const { title, platform, video_url, publish_date, month, year, views, watch_time_hours, likes, comments, shares, notes } = req.body;
-  const r = db.prepare(`INSERT INTO videos (title,platform,video_url,publish_date,month,year,views,watch_time_hours,likes,comments,shares,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(title,platform||'YouTube',video_url||'',publish_date,month,year,views||0,watch_time_hours||0,likes||0,comments||0,shares||0,notes||'');
+  const r = insertVideo(req.body);
   res.json(db.prepare('SELECT * FROM videos WHERE id=?').get(r.lastInsertRowid));
 });
-
 app.put('/api/videos/:id', (req, res) => {
-  const { title, platform, video_url, publish_date, month, year, views, watch_time_hours, likes, comments, shares, notes } = req.body;
-  db.prepare(`UPDATE videos SET title=?,platform=?,video_url=?,publish_date=?,month=?,year=?,views=?,watch_time_hours=?,likes=?,comments=?,shares=?,notes=? WHERE id=?`).run(title,platform||'YouTube',video_url||'',publish_date,month,year,views||0,watch_time_hours||0,likes||0,comments||0,shares||0,notes||'',req.params.id);
+  const v = req.body;
+  db.prepare(`UPDATE videos SET title=?,platform=?,video_url=?,publish_date=?,month=?,year=?,views=?,watch_time_hours=?,likes=?,comments=?,shares=?,notes=? WHERE id=?`)
+    .run(v.title,v.platform||'YouTube',v.video_url||'',v.publish_date||'',v.month||null,v.year||null,v.views||0,v.watch_time_hours||0,v.likes||0,v.comments||0,v.shares||0,v.notes||'',req.params.id);
   res.json(db.prepare('SELECT * FROM videos WHERE id=?').get(req.params.id));
 });
 
-app.delete('/api/videos/:id', (req, res) => {
-  db.prepare('DELETE FROM videos WHERE id=?').run(req.params.id);
-  res.json({ ok: true });
+// ─── LANDING PAGES ────────────────────────────────────────────────────────────
+function insertLanding(l) {
+  return db.prepare(`INSERT INTO landing_pages (title,page_url,page_type,publish_date,month,year,sessions,conversions,conversion_rate,bounce_rate,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(l.title,l.page_url||'',l.page_type||'new',l.publish_date||'',l.month||null,l.year||null,l.sessions||0,l.conversions||0,l.conversion_rate||0,l.bounce_rate||0,l.notes||'');
+}
+makeCrud('landing_pages', insertLanding, null, 'publish_date DESC');
+app.post('/api/landing-pages', (req, res) => {
+  const r = insertLanding(req.body);
+  res.json(db.prepare('SELECT * FROM landing_pages WHERE id=?').get(r.lastInsertRowid));
+});
+app.put('/api/landing-pages/:id', (req, res) => {
+  const l = req.body;
+  db.prepare(`UPDATE landing_pages SET title=?,page_url=?,page_type=?,publish_date=?,month=?,year=?,sessions=?,conversions=?,conversion_rate=?,bounce_rate=?,notes=? WHERE id=?`)
+    .run(l.title,l.page_url||'',l.page_type||'new',l.publish_date||'',l.month||null,l.year||null,l.sessions||0,l.conversions||0,l.conversion_rate||0,l.bounce_rate||0,l.notes||'',req.params.id);
+  res.json(db.prepare('SELECT * FROM landing_pages WHERE id=?').get(req.params.id));
 });
 
-// ─── SEO REPORTS ─────────────────────────────────────────────────────────────
-app.get('/api/seo-reports', (req, res) => {
-  const { month, year } = monthYear(req);
-  const params = [];
-  const conditions = [];
-  if (month) { conditions.push('month = ?'); params.push(month); }
-  if (year) { conditions.push('year = ?'); params.push(year); }
-  const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
-  res.json(db.prepare(`SELECT * FROM seo_reports${where} ORDER BY year DESC, month DESC`).all(...params));
+// ─── MONTHLY OVERVIEW (upsert) ────────────────────────────────────────────────
+app.get('/api/monthly-overview', (req, res) => {
+  const { month, year } = mf(req);
+  if (month && year) {
+    const row = db.prepare('SELECT * FROM monthly_overview WHERE month=? AND year=?').get(month, year);
+    return res.json(row || { month, year });
+  }
+  res.json(db.prepare('SELECT * FROM monthly_overview ORDER BY year DESC, month DESC').all());
 });
 
-app.post('/api/seo-reports', (req, res) => {
-  const { month, year, organic_traffic, total_keywords, top10_keywords, domain_authority, backlinks, top_pages, notes } = req.body;
-  const existing = db.prepare('SELECT id FROM seo_reports WHERE month=? AND year=?').get(month, year);
+app.post('/api/monthly-overview', (req, res) => {
+  const d = req.body;
+  const existing = db.prepare('SELECT id FROM monthly_overview WHERE month=? AND year=?').get(d.month, d.year);
   if (existing) {
-    db.prepare(`UPDATE seo_reports SET organic_traffic=?,total_keywords=?,top10_keywords=?,domain_authority=?,backlinks=?,top_pages=?,notes=? WHERE id=?`).run(organic_traffic||0,total_keywords||0,top10_keywords||0,domain_authority||0,backlinks||0,JSON.stringify(top_pages||[]),notes||'',existing.id);
-    res.json(db.prepare('SELECT * FROM seo_reports WHERE id=?').get(existing.id));
+    db.prepare(`UPDATE monthly_overview SET
+      active_users=?,new_users=?,total_clicks=?,total_impressions=?,avg_ctr=?,avg_position=?,
+      yt_views=?,yt_watch_time=?,yt_subscribers=?,
+      community_prev=?,community_new=?,community_total=?,
+      li_impressions=?,li_reactions=?,li_comments=?,li_reposts=?,li_page_views=?,
+      li_unique_visitors=?,li_button_clicks=?,li_followers=?,li_search_appearance=?,
+      fb_visits=?,fb_views=?,fb_reach=?,fb_interactions=?,fb_link_clicks=?,fb_follows=?,
+      tw_impressions=?,tw_engagement_rate=?,tw_engagements=?,tw_profile_visits=?,
+      tw_replies=?,tw_likes=?,tw_reposts=?,tw_bookmarks=?,tw_shares=?,
+      notes=?,updated_at=datetime('now') WHERE month=? AND year=?`)
+      .run(
+        d.active_users||0,d.new_users||0,d.total_clicks||0,d.total_impressions||0,d.avg_ctr||0,d.avg_position||0,
+        d.yt_views||0,d.yt_watch_time||0,d.yt_subscribers||0,
+        d.community_prev||0,d.community_new||0,d.community_total||0,
+        d.li_impressions||0,d.li_reactions||0,d.li_comments||0,d.li_reposts||0,d.li_page_views||0,
+        d.li_unique_visitors||0,d.li_button_clicks||0,d.li_followers||0,d.li_search_appearance||0,
+        d.fb_visits||0,d.fb_views||0,d.fb_reach||0,d.fb_interactions||0,d.fb_link_clicks||0,d.fb_follows||0,
+        d.tw_impressions||0,d.tw_engagement_rate||0,d.tw_engagements||0,d.tw_profile_visits||0,
+        d.tw_replies||0,d.tw_likes||0,d.tw_reposts||0,d.tw_bookmarks||0,d.tw_shares||0,
+        d.notes||'',d.month,d.year
+      );
   } else {
-    const r = db.prepare(`INSERT INTO seo_reports (month,year,organic_traffic,total_keywords,top10_keywords,domain_authority,backlinks,top_pages,notes) VALUES (?,?,?,?,?,?,?,?,?)`).run(month,year,organic_traffic||0,total_keywords||0,top10_keywords||0,domain_authority||0,backlinks||0,JSON.stringify(top_pages||[]),notes||'');
-    res.json(db.prepare('SELECT * FROM seo_reports WHERE id=?').get(r.lastInsertRowid));
+    db.prepare(`INSERT INTO monthly_overview (month,year,
+      active_users,new_users,total_clicks,total_impressions,avg_ctr,avg_position,
+      yt_views,yt_watch_time,yt_subscribers,
+      community_prev,community_new,community_total,
+      li_impressions,li_reactions,li_comments,li_reposts,li_page_views,
+      li_unique_visitors,li_button_clicks,li_followers,li_search_appearance,
+      fb_visits,fb_views,fb_reach,fb_interactions,fb_link_clicks,fb_follows,
+      tw_impressions,tw_engagement_rate,tw_engagements,tw_profile_visits,
+      tw_replies,tw_likes,tw_reposts,tw_bookmarks,tw_shares,notes) VALUES
+      (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(
+        d.month,d.year,
+        d.active_users||0,d.new_users||0,d.total_clicks||0,d.total_impressions||0,d.avg_ctr||0,d.avg_position||0,
+        d.yt_views||0,d.yt_watch_time||0,d.yt_subscribers||0,
+        d.community_prev||0,d.community_new||0,d.community_total||0,
+        d.li_impressions||0,d.li_reactions||0,d.li_comments||0,d.li_reposts||0,d.li_page_views||0,
+        d.li_unique_visitors||0,d.li_button_clicks||0,d.li_followers||0,d.li_search_appearance||0,
+        d.fb_visits||0,d.fb_views||0,d.fb_reach||0,d.fb_interactions||0,d.fb_link_clicks||0,d.fb_follows||0,
+        d.tw_impressions||0,d.tw_engagement_rate||0,d.tw_engagements||0,d.tw_profile_visits||0,
+        d.tw_replies||0,d.tw_likes||0,d.tw_reposts||0,d.tw_bookmarks||0,d.tw_shares||0,
+        d.notes||''
+      );
   }
+  res.json(db.prepare('SELECT * FROM monthly_overview WHERE month=? AND year=?').get(d.month, d.year));
 });
 
-app.delete('/api/seo-reports/:id', (req, res) => {
-  db.prepare('DELETE FROM seo_reports WHERE id=?').run(req.params.id);
-  res.json({ ok: true });
+// ─── APP SETTINGS ─────────────────────────────────────────────────────────────
+app.get('/api/settings', (req, res) => {
+  const rows = db.prepare('SELECT key, value FROM app_settings').all();
+  const settings = {};
+  for (const r of rows) settings[r.key] = r.value;
+  res.json(settings);
 });
 
-// ─── TASKS ───────────────────────────────────────────────────────────────────
-app.get('/api/tasks', (req, res) => {
-  const { month, year } = monthYear(req);
-  const params = [];
-  const conditions = [];
-  if (req.query.status) { conditions.push('status = ?'); params.push(req.query.status); }
-  if (month) { conditions.push('month = ?'); params.push(month); }
-  if (year) { conditions.push('year = ?'); params.push(year); }
-  const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
-  res.json(db.prepare(`SELECT * FROM tasks${where} ORDER BY CASE priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, due_date ASC`).all(...params));
-});
-
-app.post('/api/tasks', (req, res) => {
-  const { title, category, assignee, due_date, completed_date, status, priority, month, year, notes } = req.body;
-  const r = db.prepare(`INSERT INTO tasks (title,category,assignee,due_date,completed_date,status,priority,month,year,notes) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(title,category||'General',assignee||'',due_date||'',completed_date||'',status||'pending',priority||'medium',month,year,notes||'');
-  res.json(db.prepare('SELECT * FROM tasks WHERE id=?').get(r.lastInsertRowid));
-});
-
-app.put('/api/tasks/:id', (req, res) => {
-  const { title, category, assignee, due_date, completed_date, status, priority, month, year, notes } = req.body;
-  db.prepare(`UPDATE tasks SET title=?,category=?,assignee=?,due_date=?,completed_date=?,status=?,priority=?,month=?,year=?,notes=? WHERE id=?`).run(title,category||'General',assignee||'',due_date||'',completed_date||'',status||'pending',priority||'medium',month,year,notes||'',req.params.id);
-  res.json(db.prepare('SELECT * FROM tasks WHERE id=?').get(req.params.id));
-});
-
-app.delete('/api/tasks/:id', (req, res) => {
-  db.prepare('DELETE FROM tasks WHERE id=?').run(req.params.id);
-  res.json({ ok: true });
-});
-
-// ─── OTHER ACTIVITIES ────────────────────────────────────────────────────────
-app.get('/api/other-activities', (req, res) => {
-  const { month, year } = monthYear(req);
-  const params = [];
-  const sql = addFilters('SELECT * FROM other_activities ORDER BY activity_date DESC', params, { month, year });
-  res.json(db.prepare(sql).all(...params));
-});
-
-app.post('/api/other-activities', (req, res) => {
-  const { title, activity_type, activity_date, month, year, description, result, notes } = req.body;
-  const r = db.prepare(`INSERT INTO other_activities (title,activity_type,activity_date,month,year,description,result,notes) VALUES (?,?,?,?,?,?,?,?)`).run(title,activity_type||'Other',activity_date||'',month,year,description||'',result||'',notes||'');
-  res.json(db.prepare('SELECT * FROM other_activities WHERE id=?').get(r.lastInsertRowid));
-});
-
-app.put('/api/other-activities/:id', (req, res) => {
-  const { title, activity_type, activity_date, month, year, description, result, notes } = req.body;
-  db.prepare(`UPDATE other_activities SET title=?,activity_type=?,activity_date=?,month=?,year=?,description=?,result=?,notes=? WHERE id=?`).run(title,activity_type||'Other',activity_date||'',month,year,description||'',result||'',notes||'',req.params.id);
-  res.json(db.prepare('SELECT * FROM other_activities WHERE id=?').get(req.params.id));
-});
-
-app.delete('/api/other-activities/:id', (req, res) => {
-  db.prepare('DELETE FROM other_activities WHERE id=?').run(req.params.id);
-  res.json({ ok: true });
-});
-
-// ─── MONTHLY REPORTS ─────────────────────────────────────────────────────────
-app.get('/api/monthly-reports', (req, res) => {
-  const year = req.query.year ? parseInt(req.query.year) : null;
-  if (year) {
-    res.json(db.prepare('SELECT * FROM monthly_reports WHERE year=? ORDER BY month ASC').all(year));
-  } else {
-    res.json(db.prepare('SELECT * FROM monthly_reports ORDER BY year DESC, month DESC').all());
+app.put('/api/settings', (req, res) => {
+  const updates = req.body;
+  for (const [key, value] of Object.entries(updates)) {
+    db.prepare(`INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))`).run(key, String(value));
   }
+  const rows = db.prepare('SELECT key, value FROM app_settings').all();
+  const settings = {};
+  for (const r of rows) settings[r.key] = r.value;
+  res.json(settings);
 });
 
-app.get('/api/monthly-reports/:year/:month', (req, res) => {
-  const report = db.prepare('SELECT * FROM monthly_reports WHERE year=? AND month=?').get(req.params.year, req.params.month);
-  if (!report) return res.json(null);
-  res.json({ ...report, highlights: JSON.parse(report.highlights || '[]') });
-});
-
-app.post('/api/monthly-reports', (req, res) => {
-  const { month, year, title, highlights, summary, is_finalized } = req.body;
-  const existing = db.prepare('SELECT id FROM monthly_reports WHERE month=? AND year=?').get(month, year);
-  const hlJson = JSON.stringify(highlights || []);
-  if (existing) {
-    db.prepare(`UPDATE monthly_reports SET title=?,highlights=?,summary=?,is_finalized=?,updated_at=datetime('now') WHERE id=?`).run(title||'',hlJson,summary||'',is_finalized?1:0,existing.id);
-    const r = db.prepare('SELECT * FROM monthly_reports WHERE id=?').get(existing.id);
-    res.json({ ...r, highlights: JSON.parse(r.highlights || '[]') });
-  } else {
-    const r2 = db.prepare(`INSERT INTO monthly_reports (month,year,title,highlights,summary,is_finalized) VALUES (?,?,?,?,?,?)`).run(month,year,title||'',hlJson,summary||'',is_finalized?1:0);
-    const r = db.prepare('SELECT * FROM monthly_reports WHERE id=?').get(r2.lastInsertRowid);
-    res.json({ ...r, highlights: JSON.parse(r.highlights || '[]') });
-  }
-});
-
-// ─── DASHBOARD STATS ─────────────────────────────────────────────────────────
+// ─── DASHBOARD ────────────────────────────────────────────────────────────────
 app.get('/api/dashboard', (req, res) => {
-  const { month, year } = monthYear(req);
-  const params = [];
-  const conditions = [];
-  if (month) { conditions.push('month = ?'); params.push(month); }
-  if (year) { conditions.push('year = ?'); params.push(year); }
-  const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
+  const now = new Date();
+  const month = req.query.month ? parseInt(req.query.month) : now.getMonth() + 1;
+  const year = req.query.year ? parseInt(req.query.year) : now.getFullYear();
 
-  const blogCount = db.prepare(`SELECT COUNT(*) as c FROM blog_posts${where}`).get(...params).c;
-  const blogViews = db.prepare(`SELECT COALESCE(SUM(views),0) as s FROM blog_posts${where}`).get(...params).s;
-  const blogTraffic = db.prepare(`SELECT COALESCE(SUM(organic_traffic),0) as s FROM blog_posts${where}`).get(...params).s;
+  const count = (table, extraWhere = '') => {
+    const where = `WHERE month=? AND year=?${extraWhere ? ' AND ' + extraWhere : ''}`;
+    return db.prepare(`SELECT COUNT(*) as c FROM ${table} ${where}`).get(month, year)?.c || 0;
+  };
 
-  const socialCounts = db.prepare(`SELECT platform, COUNT(*) as c FROM social_posts${where} GROUP BY platform`).all(...params);
-  const socialTotal = db.prepare(`SELECT COUNT(*) as c FROM social_posts${where}`).get(...params).c;
-  const socialImpressions = db.prepare(`SELECT COALESCE(SUM(impressions),0) as s FROM social_posts${where}`).get(...params).s;
-  const socialEngagement = db.prepare(`SELECT COALESCE(SUM(engagement),0) as s FROM social_posts${where}`).get(...params).s;
-
-  const lpNew = db.prepare(`SELECT COUNT(*) as c FROM landing_pages${where ? where + ' AND' : ' WHERE'} page_type='new'`).get(...params).c;
-  const lpUpdated = db.prepare(`SELECT COUNT(*) as c FROM landing_pages${where ? where + ' AND' : ' WHERE'} page_type='updated'`).get(...params).c;
-
-  const emailCount = db.prepare(`SELECT COUNT(*) as c FROM email_campaigns${where}`).get(...params).c;
-  const emailRecipients = db.prepare(`SELECT COALESCE(SUM(recipients),0) as s FROM email_campaigns${where}`).get(...params).s;
-
-  const videoCount = db.prepare(`SELECT COUNT(*) as c FROM videos${where}`).get(...params).c;
-  const videoViews = db.prepare(`SELECT COALESCE(SUM(views),0) as s FROM videos${where}`).get(...params).s;
-
-  const taskTotal = db.prepare(`SELECT COUNT(*) as c FROM tasks${where}`).get(...params).c;
-  const taskDone = db.prepare(`SELECT COUNT(*) as c FROM tasks${where ? where + ' AND' : ' WHERE'} status='completed'`).get(...params).c;
-
-  const seoData = (month && year) ? db.prepare('SELECT * FROM seo_reports WHERE month=? AND year=?').get(month, year) : null;
-
-  // Monthly trend for the year (last 12 months)
-  const trendYear = year || new Date().getFullYear();
-  const monthlyTrend = Array.from({ length: 12 }, (_, i) => {
-    const m = i + 1;
-    const bp = db.prepare('SELECT COUNT(*) as c FROM blog_posts WHERE month=? AND year=?').get(m, trendYear).c;
-    const sp = db.prepare('SELECT COUNT(*) as c FROM social_posts WHERE month=? AND year=?').get(m, trendYear).c;
-    const em = db.prepare('SELECT COUNT(*) as c FROM email_campaigns WHERE month=? AND year=?').get(m, trendYear).c;
-    const vi = db.prepare('SELECT COUNT(*) as c FROM videos WHERE month=? AND year=?').get(m, trendYear).c;
-    return { month: m, blogs: bp, social: sp, emails: em, videos: vi };
-  });
+  const emailStats = db.prepare(`SELECT COUNT(*) as count, COALESCE(AVG(open_rate),0) as avg_open, COALESCE(AVG(click_rate),0) as avg_click, COALESCE(SUM(recipients),0) as total_recipients FROM email_campaigns WHERE month=? AND year=?`).get(month, year);
+  const socialWithFb = db.prepare(`SELECT COUNT(*) as c FROM social_posts WHERE month=? AND year=? AND fb_url != ''`).get(month, year)?.c || 0;
+  const socialWithLi = db.prepare(`SELECT COUNT(*) as c FROM social_posts WHERE month=? AND year=? AND linkedin_url != ''`).get(month, year)?.c || 0;
+  const socialWithTw = db.prepare(`SELECT COUNT(*) as c FROM social_posts WHERE month=? AND year=? AND twitter_url != ''`).get(month, year)?.c || 0;
+  const overview = db.prepare('SELECT * FROM monthly_overview WHERE month=? AND year=?').get(month, year);
 
   res.json({
-    blog: { count: blogCount, views: blogViews, organic_traffic: blogTraffic },
-    social: { total: socialTotal, by_platform: socialCounts, impressions: socialImpressions, engagement: socialEngagement },
-    landing_pages: { new: lpNew, updated: lpUpdated, total: lpNew + lpUpdated },
-    email: { count: emailCount, recipients: emailRecipients },
-    video: { count: videoCount, views: videoViews },
-    tasks: { total: taskTotal, completed: taskDone, completion_rate: taskTotal ? Math.round(taskDone/taskTotal*100) : 0 },
-    seo: seoData,
-    monthly_trend: monthlyTrend
+    month, year,
+    blogs: count('blog_posts'),
+    documentations: count('documentations'),
+    social_posts: count('social_posts'),
+    community_posts: count('community_posts'),
+    emails: count('email_campaigns'),
+    videos: count('videos'),
+    landing_pages: count('landing_pages'),
+    email_avg_open: emailStats?.avg_open || 0,
+    email_avg_click: emailStats?.avg_click || 0,
+    email_total_recipients: emailStats?.total_recipients || 0,
+    social_fb: socialWithFb,
+    social_li: socialWithLi,
+    social_tw: socialWithTw,
+    overview: overview || null,
   });
 });
 
-// ─── YEARLY SUMMARY ───────────────────────────────────────────────────────────
-app.get('/api/yearly-summary/:year', (req, res) => {
+// ─── ANALYTICS ───────────────────────────────────────────────────────────────
+app.get('/api/analytics/:year', (req, res) => {
   const year = parseInt(req.params.year);
-  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const months = [1,2,3,4,5,6,7,8,9,10,11,12];
 
-  const summary = Array.from({ length: 12 }, (_, i) => {
-    const m = i + 1;
-    return {
-      month: m,
-      month_name: monthNames[i],
-      blogs: db.prepare('SELECT COUNT(*) as c FROM blog_posts WHERE month=? AND year=?').get(m, year).c,
-      blog_views: db.prepare('SELECT COALESCE(SUM(views),0) as s FROM blog_posts WHERE month=? AND year=?').get(m, year).s,
-      social_posts: db.prepare('SELECT COUNT(*) as c FROM social_posts WHERE month=? AND year=?').get(m, year).c,
-      social_impressions: db.prepare('SELECT COALESCE(SUM(impressions),0) as s FROM social_posts WHERE month=? AND year=?').get(m, year).s,
-      landing_pages: db.prepare('SELECT COUNT(*) as c FROM landing_pages WHERE month=? AND year=?').get(m, year).c,
-      emails: db.prepare('SELECT COUNT(*) as c FROM email_campaigns WHERE month=? AND year=?').get(m, year).c,
-      email_recipients: db.prepare('SELECT COALESCE(SUM(recipients),0) as s FROM email_campaigns WHERE month=? AND year=?').get(m, year).s,
-      videos: db.prepare('SELECT COUNT(*) as c FROM videos WHERE month=? AND year=?').get(m, year).c,
-      video_views: db.prepare('SELECT COALESCE(SUM(views),0) as s FROM videos WHERE month=? AND year=?').get(m, year).s,
-      tasks_total: db.prepare('SELECT COUNT(*) as c FROM tasks WHERE month=? AND year=?').get(m, year).c,
-      tasks_completed: db.prepare("SELECT COUNT(*) as c FROM tasks WHERE month=? AND year=? AND status='completed'").get(m, year).c,
-      seo: db.prepare('SELECT organic_traffic, total_keywords, top10_keywords FROM seo_reports WHERE month=? AND year=?').get(m, year),
-      report: db.prepare('SELECT * FROM monthly_reports WHERE month=? AND year=?').get(m, year)
-    };
+  const content = months.map(m => ({
+    month: m,
+    blogs: db.prepare('SELECT COUNT(*) as c FROM blog_posts WHERE month=? AND year=?').get(m, year)?.c || 0,
+    docs: db.prepare('SELECT COUNT(*) as c FROM documentations WHERE month=? AND year=?').get(m, year)?.c || 0,
+    social: db.prepare('SELECT COUNT(*) as c FROM social_posts WHERE month=? AND year=?').get(m, year)?.c || 0,
+    community: db.prepare('SELECT COUNT(*) as c FROM community_posts WHERE month=? AND year=?').get(m, year)?.c || 0,
+    emails: db.prepare('SELECT COUNT(*) as c FROM email_campaigns WHERE month=? AND year=?').get(m, year)?.c || 0,
+    videos: db.prepare('SELECT COUNT(*) as c FROM videos WHERE month=? AND year=?').get(m, year)?.c || 0,
+    landing_pages: db.prepare('SELECT COUNT(*) as c FROM landing_pages WHERE month=? AND year=?').get(m, year)?.c || 0,
+  }));
+
+  const emails = months.map(m => {
+    const r = db.prepare('SELECT COUNT(*) as count, COALESCE(AVG(open_rate),0) as avg_open, COALESCE(AVG(click_rate),0) as avg_click, COALESCE(SUM(recipients),0) as total_recipients FROM email_campaigns WHERE month=? AND year=?').get(m, year);
+    return { month: m, count: r?.count||0, avg_open: r?.avg_open||0, avg_click: r?.avg_click||0, total_recipients: r?.total_recipients||0 };
   });
 
-  res.json({
-    year,
-    totals: {
-      blogs: summary.reduce((a, m) => a + m.blogs, 0),
-      blog_views: summary.reduce((a, m) => a + m.blog_views, 0),
-      social_posts: summary.reduce((a, m) => a + m.social_posts, 0),
-      social_impressions: summary.reduce((a, m) => a + m.social_impressions, 0),
-      landing_pages: summary.reduce((a, m) => a + m.landing_pages, 0),
-      emails: summary.reduce((a, m) => a + m.emails, 0),
-      email_recipients: summary.reduce((a, m) => a + m.email_recipients, 0),
-      videos: summary.reduce((a, m) => a + m.videos, 0),
-      video_views: summary.reduce((a, m) => a + m.video_views, 0),
-      tasks_total: summary.reduce((a, m) => a + m.tasks_total, 0),
-      tasks_completed: summary.reduce((a, m) => a + m.tasks_completed, 0),
-    },
-    monthly: summary
+  const overview = months.map(m => {
+    const r = db.prepare('SELECT * FROM monthly_overview WHERE month=? AND year=?').get(m, year);
+    return r || { month: m, year };
   });
+
+  res.json({ year, content, emails, overview });
 });
 
-// ─── SERVE FRONTEND IN PRODUCTION ────────────────────────────────────────────
+// ─── SERVE FRONTEND ───────────────────────────────────────────────────────────
 const frontendBuild = path.join(__dirname, '../frontend/dist');
 if (fs.existsSync(frontendBuild)) {
   app.use(express.static(frontendBuild));
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(frontendBuild, 'index.html'));
-  });
+  app.get('*', (req, res) => res.sendFile(path.join(frontendBuild, 'index.html')));
 }
 
-// ─── START ───────────────────────────────────────────────────────────────────
+// ─── START ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
-
-// Initialize DB; if running directly (not under Phusion Passenger), also bind a port
 const runningDirectly = require.main === module;
 
 initDb()
   .then(initializedDb => {
     db = initializedDb;
     console.log('Database initialized successfully');
-    if (runningDirectly) {
-      app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
-    }
+    if (runningDirectly) app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
   })
   .catch(err => {
     console.error('STARTUP ERROR:', err.message);
@@ -409,5 +343,4 @@ initDb()
     process.exit(1);
   });
 
-// Phusion Passenger loads this as a module; it handles port binding itself
 module.exports = app;
