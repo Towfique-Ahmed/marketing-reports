@@ -134,7 +134,11 @@ function createTables(instance) {
 
 async function init() {
   const initSqlJs = require('sql.js');
-  const SQL = await initSqlJs();
+
+  // Explicitly load the WASM binary from disk to avoid path resolution issues
+  const wasmPath = path.join(__dirname, 'node_modules/sql.js/dist/sql-wasm.wasm');
+  const wasmBinary = fs.readFileSync(wasmPath);
+  const SQL = await initSqlJs({ wasmBinary });
 
   if (fs.existsSync(DB_PATH)) {
     sqlDb = new SQL.Database(fs.readFileSync(DB_PATH));

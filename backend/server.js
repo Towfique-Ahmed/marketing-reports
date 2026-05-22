@@ -385,9 +385,14 @@ const PORT = process.env.PORT || 3001;
 initDb()
   .then(initializedDb => {
     db = initializedDb;
-    app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+    console.log('Database initialized successfully');
+    app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
   })
   .catch(err => {
-    console.error('Failed to initialize database:', err);
+    console.error('STARTUP ERROR:', err.message);
+    console.error(err.stack);
     process.exit(1);
   });
+
+// Phusion Passenger compatibility (used by cPanel/xCloud)
+module.exports = app;
