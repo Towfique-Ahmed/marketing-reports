@@ -2,24 +2,23 @@
 
 namespace Database\Seeders;
 
-use App\Models\User;
-use Illuminate\Database\Console\Seeds\WithoutModelEvents;
+use App\Models\AppSetting;
 use Illuminate\Database\Seeder;
 
 class DatabaseSeeder extends Seeder
 {
-    use WithoutModelEvents;
-
-    /**
-     * Seed the application's database.
-     */
     public function run(): void
     {
-        // User::factory(10)->create();
+        $defaults = [
+            'primary_color' => '#3B82F6',
+            'accent_color'  => '#8B5CF6',
+            'sidebar_bg'    => '#1e293b',
+            'font_family'   => 'Inter',
+            'theme'         => 'light',
+        ];
 
-        User::factory()->create([
-            'name' => 'Test User',
-            'email' => 'test@example.com',
-        ]);
+        foreach ($defaults as $key => $value) {
+            AppSetting::updateOrCreate(['key' => $key], ['value' => $value]);
+        }
     }
 }
