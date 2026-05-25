@@ -1,9 +1,9 @@
 {
     "$schema": "https://getcomposer.org/schema.json",
-    "name": "laravel/laravel",
+    "name": "towfique-ahmed/marketing-insights-board",
     "type": "project",
-    "description": "The skeleton application for the Laravel framework.",
-    "keywords": ["laravel", "framework"],
+    "description": "Marketing Insights Board — a Laravel-based marketing reports and analytics platform.",
+    "keywords": ["laravel", "marketing", "analytics", "reports"],
     "license": "MIT",
     "require": {
         "php": "^8.3",
